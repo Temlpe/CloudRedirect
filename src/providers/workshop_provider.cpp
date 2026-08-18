@@ -399,8 +399,14 @@ int WorkshopProvider::RunTool(const std::vector<std::string>& args,
     PROCESS_INFORMATION pi{};
     if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, TRUE,
                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        DWORD err = GetLastError();
         LOG("[WorkshopProvider] Failed to spawn %s (err %lu)",
-            m_toolPath.c_str(), GetLastError());
+            m_toolPath.c_str(), err);
+        if (err == ERROR_FILE_NOT_FOUND && !m_notifiedMissingTool.exchange(true)) {
+            Notify(std::string("workshop_sync_tool.exe is missing at '") + m_toolPath +
+                   "'. Workshop sync is disabled. Run the CloudRedirect app once "
+                   "to reinstall it (or copy it there manually), then restart Steam.");
+        }
         CloseHandle(outRead);
         CloseHandle(outWrite);
         return -1;

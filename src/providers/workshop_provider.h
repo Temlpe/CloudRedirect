@@ -89,6 +89,7 @@ private:
     std::mutex m_toolMutex;             // one workshop_sync_tool.exe at a time
     std::mutex m_activeProcessMtx;      // guards m_activeToolProcess
     void* m_activeToolProcess = nullptr; // running tool's process handle (kill at shutdown)
+    std::atomic<bool> m_notifiedMissingTool{false}; // one "tool missing" notice per session
     std::thread m_pushThread;
     std::thread m_prefetchThread;
     std::mutex m_pushMtx;
