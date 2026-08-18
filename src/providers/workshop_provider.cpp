@@ -7,6 +7,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -33,6 +34,13 @@ constexpr int kRetryAfterOtherSec = 300;
 constexpr int kPushTimeoutSec = 1800;
 constexpr int kPushWaitSec = kPushTimeoutSec + 60;
 constexpr int kPullWaitMarginSec = 60;
+
+// Pull failure backoff: a failed pull (Steam starting up, offline) must not
+// poison the whole session -- a new machine would start the game with no
+// saves. Retry with backoff up to a per-session cap.
+constexpr int kPullRetryBackoffSec = 30;
+constexpr int kMaxPullAttempts = 10;
+constexpr int kPullInlineRetryDelaySec = 5;
 
 #ifdef _WIN32
 // Roaming AppData without SHGetKnownFolderPath's pointer dance.
@@ -221,7 +229,9 @@ std::string WorkshopProvider::ToFullPath(const std::string& relPath) const {
 }
 
 std::string WorkshopProvider::ItemRootDir(uint32_t accountId, uint32_t appId) const {
-    return m_root + std::to_string(accountId) + "\\" + std::to_string(appId) + "\\";
+    // No trailing separator: workshop_sync_tool rejects it, and a trailing
+    // backslash would break command-line quoting downstream.
+    return m_root + std::to_string(accountId) + "\\" + std::to_string(appId);
 }
 
 std::string WorkshopProvider::MetaDir() const {
@@ -266,21 +276,24 @@ void WorkshopProvider::LoadMeta(const std::shared_ptr<ItemState>& st,
     std::string path = MetaDir() + std::to_string(accountId) + "_" +
         std::to_string(appId) + ".json";
     std::ifstream f(FileUtil::Utf8ToPath(path));
-    if (!f) return;
-    std::string text((std::istreambuf_iterator<char>(f)), {});
-    f.close();
-    auto root = Json::Parse(text);
-    if (root["item"].type == Json::Type::Number)
-        st->itemId = (uint64_t)root["item"].integer();
-    if (root["tombstones"].type == Json::Type::Object) {
-        for (auto& [rel, ts] : root["tombstones"].objVal) {
-            if (ts.type == Json::Type::Number)
-                st->tombstones[rel] = (uint64_t)ts.integer();
+    if (f) {
+        std::string text((std::istreambuf_iterator<char>(f)), {});
+        f.close();
+        auto root = Json::Parse(text);
+        if (root["item"].type == Json::Type::Number)
+            st->itemId = (uint64_t)root["item"].integer();
+        if (root["tombstones"].type == Json::Type::Object) {
+            for (auto& [rel, ts] : root["tombstones"].objVal) {
+                if (ts.type == Json::Type::Number)
+                    st->tombstones[rel] = (uint64_t)ts.integer();
+            }
         }
     }
 
     // The .dirty marker survives a crashed session: restore the flag so the
     // next EnsurePulled pushes local changes before merging remote content.
+    // Checked even when no meta json exists yet (a first push never
+    // completing leaves a dirty marker but no json).
     std::string dirtyPath = MetaDir() + std::to_string(accountId) + "_" +
         std::to_string(appId) + ".dirty";
     std::error_code ec;
@@ -328,20 +341,40 @@ void WorkshopProvider::Notify(const std::string& message) {
 // ── Worker tool interaction ────────────────────────────────────────────
 
 #ifdef _WIN32
+// Correct CommandLineToArgvW-compatible quoting: double runs of backslashes
+// before quotes and the trailing backslash run (a lone trailing backslash
+// would otherwise escape the closing quote and corrupt every following arg).
+static std::string QuoteArg(const std::string& a) {
+    if (a.empty()) return "\"\"";
+    std::string out = "\"";
+    size_t backslashes = 0;
+    for (char c : a) {
+        if (c == '\\') {
+            ++backslashes;
+        } else if (c == '"') {
+            out.append(backslashes * 2 + 1, '\\');
+            out += '"';
+            backslashes = 0;
+        } else {
+            out.append(backslashes, '\\');
+            out += c;
+            backslashes = 0;
+        }
+    }
+    out.append(backslashes * 2, '\\');
+    out += '"';
+    return out;
+}
+
 int WorkshopProvider::RunTool(const std::vector<std::string>& args,
                               std::string& stdoutOut, int timeoutSec) {
     std::lock_guard<std::mutex> lock(m_toolMutex);
     if (m_shutdown.load()) return -1;
 
-    // Build the command line with quoting.
-    std::string cmdline = "\"" + m_toolPath + "\"";
+    std::string cmdline = QuoteArg(m_toolPath);
     for (const auto& a : args) {
-        cmdline += " \"";
-        for (char c : a) {
-            if (c == '"') cmdline += "\\\"";
-            else cmdline += c;
-        }
-        cmdline += "\"";
+        cmdline += ' ';
+        cmdline += QuoteArg(a);
     }
 
     int wideLen = MultiByteToWideChar(CP_UTF8, 0, cmdline.c_str(), (int)cmdline.size(),
@@ -381,7 +414,7 @@ int WorkshopProvider::RunTool(const std::vector<std::string>& args,
     ULONGLONG deadline = GetTickCount64() + (ULONGLONG)timeoutSec * 1000;
     char buf[4096];
     DWORD read = 0;
-    int rc = -1;
+    bool timedOut = false;
     for (;;) {
         if (WaitForSingleObject(pi.hProcess, 100) == WAIT_OBJECT_0) break;
         DWORD avail = 0;
@@ -395,7 +428,7 @@ int WorkshopProvider::RunTool(const std::vector<std::string>& args,
             LOG("[WorkshopProvider] Tool %s timed out after %ds; killing",
                 m_toolPath.c_str(), timeoutSec);
             TerminateProcess(pi.hProcess, 1);
-            rc = -1;
+            timedOut = true;
             break;
         }
     }
@@ -409,7 +442,8 @@ int WorkshopProvider::RunTool(const std::vector<std::string>& args,
         buf[read] = '\0';
         stdoutOut.append(buf, read);
     }
-    if (rc != -1) {
+    int rc = -1;
+    if (!timedOut) {
         DWORD exitCode = 0;
         GetExitCodeProcess(pi.hProcess, &exitCode);
         rc = (int)exitCode;
@@ -525,7 +559,22 @@ void WorkshopProvider::EnsurePulled(uint32_t accountId, uint32_t appId) {
                         [&] { return st->pullDone || m_shutdown.load(); });
         return;
     }
+    auto now = std::chrono::steady_clock::now();
+    if (st->pullAttempts > 0 &&
+        now - st->lastPullAttempt < std::chrono::seconds(kPullRetryBackoffSec)) {
+        // Recently failed: back off and serve the mirror as-is this call.
+        return;
+    }
+    if (st->pullAttempts >= kMaxPullAttempts) {
+        if (st->pullAttempts == kMaxPullAttempts) {
+            ++st->pullAttempts; // log once
+            LOG("[WorkshopProvider] Giving up on pull %u/%u this session after %d attempts",
+                accountId, appId, kMaxPullAttempts);
+        }
+        return;
+    }
     st->pullInFlight = true;
+    ++st->pullAttempts;
     lk.unlock();
 
     LoadMeta(st, accountId, appId);
@@ -545,11 +594,25 @@ void WorkshopProvider::EnsurePulled(uint32_t accountId, uint32_t appId) {
         // newer local files and the dirty flag stays for a later push.
     }
 
-    PullItem(accountId, appId, st);
+    int rc = PullItem(accountId, appId, st);
+    if (rc != 0 && st->pullAttempts == 1) {
+        // First pull attempt of the session: Steam may still be starting when
+        // a game launches early. One inline retry covers that common case.
+        LOG("[WorkshopProvider] First pull %u/%u failed (rc=%d); retrying in %ds",
+            accountId, appId, rc, kPullInlineRetryDelaySec);
+        std::this_thread::sleep_for(std::chrono::seconds(kPullInlineRetryDelaySec));
+        rc = PullItem(accountId, appId, st);
+    }
 
     lk.lock();
-    st->pullDone = true;
     st->pullInFlight = false;
+    st->lastPullAttempt = std::chrono::steady_clock::now();
+    if (rc == 0) {
+        st->pullDone = true;
+    } else {
+        LOG("[WorkshopProvider] Pull %u/%u failed (rc=%d); will retry (attempt %d/%d)",
+            accountId, appId, rc, st->pullAttempts, kMaxPullAttempts);
+    }
     st->cv.notify_all();
 }
 

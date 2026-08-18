@@ -38,6 +38,53 @@
 
 #include "sha256_hmac.h"
 
+// ── Encoding helpers ───────────────────────────────────────────────────
+// The provider spawns this tool with a UTF-8 command line (CreateProcessW).
+// wmain keeps the arguments lossless. Steam API strings are UTF-8, while
+// Win32 file APIs need wide strings converted from UTF-8. Round-tripping
+// through the ANSI code page is what broke uploads on non-ASCII (Chinese)
+// content paths: GetFileAttributesA found the folder but SetItemContent
+// received mojibake and the submit failed with EResult=2.
+
+static std::string ToUtf8(const wchar_t* w) {
+    if (!w || !*w) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1) return {};
+    std::string s((size_t)(len - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), len, nullptr, nullptr);
+    return s;
+}
+
+static std::string ToUtf8(const std::wstring& w) {
+    return ToUtf8(w.c_str());
+}
+
+static std::wstring ToWide(const char* utf8) {
+    if (!utf8 || !*utf8) return {};
+    int len = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, nullptr, 0);
+    if (len <= 1) return {};
+    std::wstring s((size_t)(len - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8, -1, s.data(), len);
+    return s;
+}
+
+static std::wstring ToWide(const std::string& utf8) {
+    return ToWide(utf8.c_str());
+}
+
+// Steam returns install-info folder paths as char*; the convention is UTF-8,
+// but be tolerant of ACP bytes from older builds.
+static std::wstring ToWideTolerant(const char* p) {
+    std::wstring w = ToWide(p);
+    if (!w.empty()) return w;
+    if (!p || !*p) return {};
+    int len = MultiByteToWideChar(CP_ACP, 0, p, -1, nullptr, 0);
+    if (len <= 1) return {};
+    std::wstring s((size_t)(len - 1), L'\0');
+    MultiByteToWideChar(CP_ACP, 0, p, -1, s.data(), len);
+    return s;
+}
+
 // ── Flat Steamworks API typedefs (subset we use) ───────────────────────
 // Signatures match steam_api_flat.h from the Steamworks SDK.
 typedef int32_t HSteamUser;
@@ -90,11 +137,13 @@ typedef bool   (__cdecl* Utils_GetAPICallResult_t)(ISteamUtils*, SteamAPICall_t,
 
 // ── Steamworks public structs (layouts stable across SDK versions) ─────
 
-// EResult subset
+// EResult subset (values from steamclientpublic.h)
 enum EResult {
     k_EResultOK = 1, k_EResultFail = 2, k_EResultInvalidParam = 8,
-    k_EResultBusy = 10, k_EResultNotLoggedOn = 17, k_EResultLimitExceeded = 25,
-    k_EResultRateLimitExceeded = 84,
+    k_EResultFileNotFound = 9, k_EResultBusy = 10,
+    k_EResultAccessDenied = 15, k_EResultBanned = 17,
+    k_EResultNotLoggedOn = 21, k_EResultInsufficientPrivilege = 24,
+    k_EResultLimitExceeded = 25, k_EResultRateLimitExceeded = 84,
 };
 
 // EWorkshopFileType
@@ -240,18 +289,18 @@ static bool resolve(HMODULE m, const char* name, T& out) {
 
 // Load bundled steam_api64.dll from exe directory (no game-folder search).
 static HMODULE LoadSteamApiDll() {
-    char exeDir[MAX_PATH] = {};
-    DWORD n = GetModuleFileNameA(nullptr, exeDir, sizeof(exeDir));
-    if (n > 0 && n < sizeof(exeDir)) {
-        char* slash = strrchr(exeDir, '\\');
+    wchar_t exeDir[MAX_PATH] = {};
+    DWORD n = GetModuleFileNameW(nullptr, exeDir, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) {
+        wchar_t* slash = wcsrchr(exeDir, L'\\');
         if (slash) {
-            *(slash + 1) = '\0';
-            std::string full = std::string(exeDir) + "steam_api64.dll";
-            HMODULE m = LoadLibraryA(full.c_str());
+            *(slash + 1) = L'\0';
+            std::wstring full = std::wstring(exeDir) + L"steam_api64.dll";
+            HMODULE m = LoadLibraryW(full.c_str());
             if (m) return m;
         }
     }
-    return LoadLibraryA("steam_api64.dll");
+    return LoadLibraryW(L"steam_api64.dll");
 }
 
 static bool LoadSteamApi(SteamApi& api) {
@@ -313,7 +362,7 @@ static bool Connect(SteamApi& api, uint32_t appId) {
             fwrite(appIdStr, 1, strlen(appIdStr), f);
             fclose(f);
             init = api.Init();
-            DeleteFileA("steam_appid.txt");
+            DeleteFileW(L"steam_appid.txt");
         }
     }
     if (!init) {
@@ -461,6 +510,105 @@ static int FindItemByTitle(SteamApi& api, AccountID_t accountId, AppId_t worksho
 
 // ── Push ───────────────────────────────────────────────────────────────
 
+// Strip trailing separators: UGC rejects content paths with a trailing
+// backslash, and the caller's command-line quoting would mangle them.
+static std::string StripTrailingSeps(const std::string& path) {
+    size_t end = path.size();
+    while (end > 0 && (path[end - 1] == '\\' || path[end - 1] == '/')) --end;
+    if (end == 0) return path;
+    return path.substr(0, end);
+}
+
+// Long-path prefix. Game save trees (e.g. Grounded autosave names) exceed the
+// legacy 260-char MAX_PATH; every Win32 call below goes through \\?\ so deep
+// trees copy correctly.
+static std::wstring Lp(const std::wstring& p) {
+    if (p.size() >= 4 && p[0] == L'\\' && p[1] == L'\\' && p[2] == L'?' && p[3] == L'\\')
+        return p;   // already prefixed
+    if (p.size() >= 2 && p[1] == L':')
+        return L"\\\\?\\" + p;   // absolute drive path
+    if (p.size() >= 2 && p[0] == L'\\' && p[1] == L'\\')
+        return L"\\\\?\\UNC\\" + p.substr(2);  // UNC
+    return p;   // relative — callers must not pass relative paths
+}
+
+// CreateDirectoryW only makes one level; a fresh mirror on a new machine has
+// none of the intermediate dirs, so walk the chain (errors on existing dirs
+// are fine and ignored).
+static void CreateDirectoryTree(const std::wstring& dir) {
+    // Skip the drive prefix ("M:\") — creating it is invalid.
+    size_t start = (dir.size() >= 3 && dir[1] == L':' && dir[2] == L'\\') ? 3 : 0;
+    for (size_t i = start; i < dir.size(); ++i) {
+        if (dir[i] == L'\\')
+            CreateDirectoryW(Lp(dir.substr(0, i)).c_str(), nullptr);
+    }
+    CreateDirectoryW(Lp(dir).c_str(), nullptr);
+}
+
+// SetItemContent's path handling in the bundled steam_api64.dll cannot deal
+// with non-ASCII paths (UTF-8 bytes yield FileNotFound from SubmitItemUpdate,
+// ACP bytes yield Fail). Stage the tree into a fresh ASCII temp dir instead
+// and upload from there; wide APIs make the copy itself encoding-correct.
+static bool HasNonAscii(const std::string& s) {
+    for (unsigned char c : s)
+        if (c > 0x7F) return true;
+    return false;
+}
+
+static std::wstring PickAsciiTempBase() {
+    wchar_t tmp[MAX_PATH] = {};
+    if (GetTempPathW(MAX_PATH, tmp) && !HasNonAscii(ToUtf8(tmp)))
+        return tmp;
+    // %TEMP% itself is non-ASCII (localized user profile): C:\Windows\Temp
+    // is a fixed English name on disk on every Windows locale.
+    return L"C:\\Windows\\Temp\\";
+}
+
+static bool CopyTreeToStaging(const std::wstring& srcDir, const std::wstring& dstDir) {
+    WIN32_FIND_DATAW fd{};
+    std::wstring pattern = Lp(srcDir) + L"\\*";
+    HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return true;
+    do {
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        std::wstring src = srcDir + L"\\" + fd.cFileName;
+        std::wstring dst = dstDir + L"\\" + fd.cFileName;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            CreateDirectoryW(Lp(dst).c_str(), nullptr);
+            if (!CopyTreeToStaging(src, dst)) {
+                FindClose(hFind);
+                return false;
+            }
+            continue;
+        }
+        if (!CopyFileW(Lp(src).c_str(), Lp(dst).c_str(), FALSE)) {
+            fprintf(stderr, "Error: staging copy %s failed (err %lu)\n",
+                    ToUtf8(src).c_str(), GetLastError());
+            FindClose(hFind);
+            return false;
+        }
+    } while (FindNextFileW(hFind, &fd));
+    FindClose(hFind);
+    return true;
+}
+
+static void RemoveTree(const std::wstring& dir) {
+    WIN32_FIND_DATAW fd{};
+    std::wstring pattern = Lp(dir) + L"\\*";
+    HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return;
+    do {
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        std::wstring child = dir + L"\\" + fd.cFileName;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            RemoveTree(child);
+        else
+            DeleteFileW(Lp(child).c_str());
+    } while (FindNextFileW(hFind, &fd));
+    FindClose(hFind);
+    RemoveDirectoryW(Lp(dir).c_str());
+}
+
 // Exit codes (shared with the provider that spawns this tool).
 enum ToolExit {
     EXIT_OK = 0, EXIT_ERROR = 1, EXIT_AGREEMENT = 2,
@@ -469,7 +617,8 @@ enum ToolExit {
 
 static int CmdPush(SteamApi& api, AppId_t workshopAppid, uint32_t gameAppid,
                    uint32_t expectedAccount, int visibility,
-                   const std::string& contentDir, uint64_t steamid64) {
+                   const std::string& contentDirArg, uint64_t steamid64) {
+    const std::string contentDir = StripTrailingSeps(contentDirArg);
     if (expectedAccount != 0 && (steamid64 & 0xFFFFFFFFu) != expectedAccount) {
         fprintf(stderr, "ACCOUNTMISMATCH expected=%u actual=%llu\n",
                 expectedAccount, (unsigned long long)(steamid64 & 0xFFFFFFFFu));
@@ -497,7 +646,9 @@ static int CmdPush(SteamApi& api, AppId_t workshopAppid, uint32_t gameAppid,
             return EXIT_AGREEMENT;
         }
         if (created.m_eResult != k_EResultOK || created.m_nPublishedFileId == 0) {
-            fprintf(stderr, "Error: CreateItem failed, EResult=%d\n", created.m_eResult);
+            fprintf(stderr, "Error: CreateItem failed, EResult=%d agree=%d id=%llu\n",
+                    created.m_eResult, (int)created.m_bUserNeedsToAcceptWorkshopLegalAgreement,
+                    (unsigned long long)created.m_nPublishedFileId);
             return EXIT_ERROR;
         }
         itemId = created.m_nPublishedFileId;
@@ -512,29 +663,57 @@ static int CmdPush(SteamApi& api, AppId_t workshopAppid, uint32_t gameAppid,
 
     // Title + visibility are set on every update: cheap, and repairs an item
     // whose metadata got mangled.
-    api.SetItemTitle(api.ugc, handle, title.c_str());
-    api.SetItemDescription(api.ugc, handle,
-        "CloudRedirect cloud save data for one game. Do not delete.");
-    api.SetItemVisibility(api.ugc, handle, visibility);
+    if (!api.SetItemTitle(api.ugc, handle, title.c_str())) {
+        fprintf(stderr, "Error: SetItemTitle failed\n");
+        return EXIT_ERROR;
+    }
+    if (!api.SetItemDescription(api.ugc, handle,
+            "CloudRedirect cloud save data for one game. Do not delete.")) {
+        fprintf(stderr, "Error: SetItemDescription failed\n");
+        return EXIT_ERROR;
+    }
+    if (!api.SetItemVisibility(api.ugc, handle, visibility)) {
+        fprintf(stderr, "Error: SetItemVisibility failed\n");
+        return EXIT_ERROR;
+    }
 
     // SetItemContent requires an existing folder. A delete-only sync can leave
     // the content dir missing, so fall back to a fresh empty temp dir.
-    std::string emptyTemp;
+    // Non-ASCII content paths are staged into an ASCII temp dir (see
+    // HasNonAscii) because this steam_api64.dll cannot handle them.
+    std::wstring cleanupDir;
+    std::string cleanupDirUtf8;
     const char* contentPath = contentDir.c_str();
-    if (GetFileAttributesA(contentDir.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        char tmp[MAX_PATH] = {};
-        if (GetTempPathA(sizeof(tmp), tmp)) {
-            emptyTemp = std::string(tmp) + "crws_empty";
-            CreateDirectoryA(emptyTemp.c_str(), nullptr);
-            contentPath = emptyTemp.c_str();
-        } else {
-            fprintf(stderr, "Error: content dir %s missing and no temp path\n", contentDir.c_str());
+    if (GetFileAttributesW(Lp(ToWide(contentDir)).c_str()) == INVALID_FILE_ATTRIBUTES) {
+        fprintf(stderr, "Warning: content dir %s missing; uploading empty content\n",
+                contentDir.c_str());
+        std::wstring base = PickAsciiTempBase();
+        cleanupDir = base + L"crws_empty_" + std::to_wstring(GetCurrentProcessId());
+        CreateDirectoryW(Lp(cleanupDir).c_str(), nullptr);
+        cleanupDirUtf8 = ToUtf8(cleanupDir);
+        contentPath = cleanupDirUtf8.c_str();
+    } else if (HasNonAscii(contentDir) || contentDir.size() > 200) {
+        // Non-ASCII paths cannot be staged by Steam's UGC packer (see
+        // HasNonAscii), and very long trees risk MAX_PATH issues inside the
+        // client; stage both into a short ASCII temp dir instead.
+        std::wstring base = PickAsciiTempBase();
+        cleanupDir = base + L"crws_stage_" + std::to_wstring(GetCurrentProcessId()) +
+            L"_" + std::to_wstring(GetTickCount64());
+        CreateDirectoryW(Lp(cleanupDir).c_str(), nullptr);
+        if (!CopyTreeToStaging(ToWide(contentDir), cleanupDir)) {
+            fprintf(stderr, "Error: staging %s into an ASCII temp dir failed\n",
+                    contentDir.c_str());
+            RemoveTree(cleanupDir);
             return EXIT_ERROR;
         }
+        cleanupDirUtf8 = ToUtf8(cleanupDir);
+        contentPath = cleanupDirUtf8.c_str();
+        fprintf(stderr, "DBG: content path staged to %s\n", contentPath);
     }
 
     if (!api.SetItemContent(api.ugc, handle, contentPath)) {
         fprintf(stderr, "Error: SetItemContent failed for %s\n", contentPath);
+        if (!cleanupDir.empty()) RemoveTree(cleanupDir);
         return EXIT_ERROR;
     }
 
@@ -547,7 +726,12 @@ static int CmdPush(SteamApi& api, AppId_t workshopAppid, uint32_t gameAppid,
         return EXIT_ERROR;
     }
 
-    if (!emptyTemp.empty()) RemoveDirectoryA(emptyTemp.c_str());
+    if (!cleanupDir.empty()) RemoveTree(cleanupDir);
+
+    fprintf(stderr, "DBG: submit result eResult=%d agree=%d id=%llu item=%llu content=%s\n",
+            submitted.m_eResult, (int)submitted.m_bUserNeedsToAcceptWorkshopLegalAgreement,
+            (unsigned long long)submitted.m_nPublishedFileId,
+            (unsigned long long)itemId, contentPath);
 
     if (submitted.m_bUserNeedsToAcceptWorkshopLegalAgreement) {
         fprintf(stderr, "AGREEMENT: the Steam Workshop legal agreement must be accepted first\n");
@@ -567,6 +751,10 @@ static int CmdPush(SteamApi& api, AppId_t workshopAppid, uint32_t gameAppid,
                 "Error: item size/limit exceeded (EResult=%d). Steam Workshop items "
                 "have a per-item size cap; the save data for this game is too large.\n",
                 submitted.m_eResult);
+        } else if (submitted.m_eResult == k_EResultFileNotFound) {
+            fprintf(stderr,
+                "Error: SubmitItemUpdate EResult=FileNotFound -- the content folder %s "
+                "could not be staged by Steam\n", contentPath);
         } else {
             fprintf(stderr, "Error: SubmitItemUpdate failed, EResult=%d\n", submitted.m_eResult);
         }
@@ -581,17 +769,17 @@ static int CmdPush(SteamApi& api, AppId_t workshopAppid, uint32_t gameAppid,
 
 // Copy files from srcDir into dstDir, keeping whichever is newer per file.
 // Copies go through a temp name + rename so readers never see partial files.
-static bool CopyNewerTree(const std::string& srcDir, const std::string& dstDir) {
-    WIN32_FIND_DATAA fd{};
-    std::string pattern = srcDir + "\\*";
-    HANDLE hFind = FindFirstFileA(pattern.c_str(), &fd);
+static bool CopyNewerTree(const std::wstring& srcDir, const std::wstring& dstDir) {
+    WIN32_FIND_DATAW fd{};
+    std::wstring pattern = Lp(srcDir) + L"\\*";
+    HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
     if (hFind == INVALID_HANDLE_VALUE) return true;
     do {
-        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
-        std::string src = srcDir + "\\" + fd.cFileName;
-        std::string dst = dstDir + "\\" + fd.cFileName;
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        std::wstring src = srcDir + L"\\" + fd.cFileName;
+        std::wstring dst = dstDir + L"\\" + fd.cFileName;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            CreateDirectoryA(dst.c_str(), nullptr);
+            CreateDirectoryTree(dst);
             if (!CopyNewerTree(src, dst)) {
                 FindClose(hFind);
                 return false;
@@ -600,8 +788,8 @@ static bool CopyNewerTree(const std::string& srcDir, const std::string& dstDir) 
         }
 
         bool copy = true;
-        WIN32_FIND_DATAA dstFd{};
-        HANDLE hDst = FindFirstFileA(dst.c_str(), &dstFd);
+        WIN32_FIND_DATAW dstFd{};
+        HANDLE hDst = FindFirstFileW(Lp(dst).c_str(), &dstFd);
         if (hDst != INVALID_HANDLE_VALUE) {
             // Same size + not newer remote -> skip.
             if (dstFd.nFileSizeHigh == fd.nFileSizeHigh &&
@@ -614,28 +802,29 @@ static bool CopyNewerTree(const std::string& srcDir, const std::string& dstDir) 
 
         if (!copy) continue;
 
-        std::string tmp = dst + ".crws.tmp";
-        DeleteFileA(tmp.c_str());
-        if (!CopyFileA(src.c_str(), tmp.c_str(), FALSE)) {
+        std::wstring tmp = dst + L".crws.tmp";
+        DeleteFileW(Lp(tmp).c_str());
+        if (!CopyFileW(Lp(src).c_str(), Lp(tmp).c_str(), FALSE)) {
             fprintf(stderr, "Error: copy %s -> %s failed (err %lu)\n",
-                    src.c_str(), dst.c_str(), GetLastError());
+                    ToUtf8(src).c_str(), ToUtf8(dst).c_str(), GetLastError());
             FindClose(hFind);
             return false;
         }
-        if (!MoveFileExA(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        if (!MoveFileExW(Lp(tmp).c_str(), Lp(dst).c_str(), MOVEFILE_REPLACE_EXISTING)) {
             fprintf(stderr, "Error: rename %s -> %s failed (err %lu)\n",
-                    tmp.c_str(), dst.c_str(), GetLastError());
+                    ToUtf8(tmp).c_str(), ToUtf8(dst).c_str(), GetLastError());
             FindClose(hFind);
             return false;
         }
-    } while (FindNextFileA(hFind, &fd));
+    } while (FindNextFileW(hFind, &fd));
     FindClose(hFind);
     return true;
 }
 
 static int CmdPull(SteamApi& api, AppId_t workshopAppid, uint32_t gameAppid,
-                   uint32_t expectedAccount, const std::string& contentDir,
+                   uint32_t expectedAccount, const std::string& contentDirArg,
                    int timeoutSec, uint64_t steamid64) {
+    const std::string contentDir = StripTrailingSeps(contentDirArg);
     if (expectedAccount != 0 && (steamid64 & 0xFFFFFFFFu) != expectedAccount) {
         fprintf(stderr, "ACCOUNTMISMATCH expected=%u actual=%llu\n",
                 expectedAccount, (unsigned long long)(steamid64 & 0xFFFFFFFFu));
@@ -687,8 +876,14 @@ static int CmdPull(SteamApi& api, AppId_t workshopAppid, uint32_t gameAppid,
         return EXIT_ERROR;
     }
 
-    CreateDirectoryA(contentDir.c_str(), nullptr);
-    if (!CopyNewerTree(folder, contentDir)) {
+    std::wstring srcWide = ToWideTolerant(folder);
+    std::wstring dstWide = ToWide(contentDir);
+    if (srcWide.empty() || dstWide.empty()) {
+        fprintf(stderr, "Error: bad paths for merge\n");
+        return EXIT_ERROR;
+    }
+    CreateDirectoryTree(dstWide);
+    if (!CopyNewerTree(srcWide, dstWide)) {
         fprintf(stderr, "Error: merging item content into %s failed\n", contentDir.c_str());
         return EXIT_ERROR;
     }
@@ -789,15 +984,15 @@ struct Options {
     bool ok = true;
 };
 
-static Options ParseArgs(int argc, char** argv) {
+static Options ParseArgs(const std::vector<std::string>& args) {
     Options o;
-    if (argc < 2) { o.ok = false; return o; }
-    o.command = argv[1];
-    for (int i = 2; i < argc; ++i) {
-        std::string a = argv[i];
+    if (args.size() < 2) { o.ok = false; return o; }
+    o.command = args[1];
+    for (size_t i = 2; i < args.size(); ++i) {
+        std::string a = args[i];
         auto next = [&](const char* name) -> std::string {
-            if (i + 1 >= argc) { fprintf(stderr, "Error: %s needs a value\n", name); o.ok = false; return {}; }
-            return argv[++i];
+            if (i + 1 >= args.size()) { fprintf(stderr, "Error: %s needs a value\n", name); o.ok = false; return {}; }
+            return args[++i];
         };
         if (a == "--content")       o.content = next("--content");
         else if (a == "--game-appid")     { uint32_t v; if (!ParseU32ZeroOk(next("--game-appid"), v)) o.ok = false; else o.gameAppid = v; }
@@ -831,10 +1026,18 @@ static void Usage() {
         "            4 rate limited, 5 account mismatch, 1 error.\n");
 }
 
-int main(int argc, char** argv) {
+int wmain(int argc, wchar_t** argv) {
     // stderr is fully buffered when piped, which hides crash locations.
     setvbuf(stderr, nullptr, _IONBF, 0);
-    Options o = ParseArgs(argc, argv);
+
+    // Lossless UTF-8 arguments: main() would round-trip the command line
+    // through the ANSI code page and corrupt non-ASCII (Chinese) paths.
+    std::vector<std::string> u8Args;
+    u8Args.reserve((size_t)argc);
+    for (int i = 0; i < argc; ++i)
+        u8Args.push_back(ToUtf8(argv[i]));
+
+    Options o = ParseArgs(u8Args);
     if (!o.ok) { Usage(); return 1; }
 
     SteamApi api;

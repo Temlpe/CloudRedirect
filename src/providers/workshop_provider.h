@@ -60,12 +60,14 @@ private:
     struct ItemState {
         std::mutex mtx;
         std::condition_variable cv;
-        bool pullDone = false;         // pull completed (or definitively failed) this session
+        bool pullDone = false;         // pull completed successfully this session
         bool pullInFlight = false;
         bool dirty = false;            // local changes not pushed yet
         bool pushInFlight = false;
+        int pullAttempts = 0;          // failed pull attempts this session
         std::chrono::steady_clock::time_point dirtySince{};
         std::chrono::steady_clock::time_point pushRetryAfter{};
+        std::chrono::steady_clock::time_point lastPullAttempt{};
         uint64_t itemId = 0;
         // relPath (relative to the item root) -> unix ts of the local deletion.
         // Pull merge cannot resurrect these; cleared after a successful push.
