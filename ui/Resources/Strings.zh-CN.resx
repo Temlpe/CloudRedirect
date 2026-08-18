@@ -1504,12 +1504,6 @@
   <data name="Settings_ExperimentalHint" xml:space="preserve">
     <value>占位符文本</value>
   </data>
-  <data name="Settings_GetAchievementData" xml:space="preserve">
-    <value>修复成就</value>
-  </data>
-  <data name="Settings_GetAchievementDataHint" xml:space="preserve">
-    <value>从 Steam 获取成就数据，使 ST 本身不获取成就数据的游戏的成就显示出来。</value>
-  </data>
   <data name="Settings_CloudRedirectEnabled" xml:space="preserve">
     <value>启用云存档重定向</value>
   </data>
@@ -1794,12 +1788,6 @@
   </data>
   <data name="News_AchievementSync_Description" xml:space="preserve">
     <value>游戏时长与成就现已支持云端同步，可实现跨设备无缝游玩，依托 Steam 原生机制稳定运行。感兴趣的用户可前往设置页面手动开启。温馨提示：该功能尚处于实验阶段。</value>
-  </data>
-  <data name="News_SchemaFetching_Title" xml:space="preserve">
-    <value>为 SteamTools 获取成就架构</value>
-  </data>
-  <data name="News_SchemaFetching_Description" xml:space="preserve">
-    <value>CR现已支持读取成就架构，以往不显示成就的游戏现在能够正常展示。</value>
   </data>
   <data name="News_ShowLuaGame_Title" xml:space="preserve">
     <value>在状态中显示 Lua 游戏</value>

@@ -1468,12 +1468,6 @@ Tem certeza?</value>
   <data name="Settings_ExtraHint" xml:space="preserve">
     <value>Extras opcionais que não fazem parte da sincronização na nuvem.</value>
   </data>
-  <data name="Settings_GetAchievementData" xml:space="preserve">
-    <value>Fazer as conquistas funcionarem</value>
-  </data>
-  <data name="Settings_GetAchievementDataHint" xml:space="preserve">
-    <value>Obtém dados de conquistas do Steam; faz as conquistas aparecerem em jogos para os quais o ST não consegue obter os dados sozinho.</value>
-  </data>
   <data name="Settings_Parental" xml:space="preserve">
     <value>Steam Família</value>
   </data>
@@ -1734,12 +1728,6 @@ Tem certeza?</value>
   </data>
   <data name="News_AchievementSync_Description" xml:space="preserve">
     <value>Conquistas e tempo de jogo agora podem ser sincronizados na nuvem! Jogar em vários dispositivos é suportado. Funciona pelos sistemas normais do Steam. Ative nas Configurações se tiver interesse. Este recurso é experimental!</value>
-  </data>
-  <data name="News_SchemaFetching_Title" xml:space="preserve">
-    <value>Busca de esquema de conquistas para SteamTools</value>
-  </data>
-  <data name="News_SchemaFetching_Description" xml:space="preserve">
-    <value>O CR agora busca esquemas de conquistas, então jogos que antes não exibiam conquistas agora vão exibi-las!</value>
   </data>
   <data name="News_ShowLuaGame_Title" xml:space="preserve">
     <value>Mostrar jogo Lua no status</value>

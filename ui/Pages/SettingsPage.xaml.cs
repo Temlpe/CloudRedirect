@@ -53,8 +53,7 @@ public partial class SettingsPage : Page
         bool? AutoUpdateDll,
         bool? ShowNonSteamGame,
         bool? ParentalIgnorePlaytime,
-        bool? ParentalBypassPlaytime,
-        bool? SchemaFetch);
+        bool? ParentalBypassPlaytime);
 
     // M15: Read config off UI thread to avoid slow-disk stall.
     private async Task LoadSettingsAsync()
@@ -63,10 +62,10 @@ public partial class SettingsPage : Page
         {
             var lang = ReadLanguageSetting();
 
-            bool? a = null, p = null, l = null, u = null, nsg = null, pip = null, pbp = null, sf = null;
-            ReadSyncTogglesInto(ref a, ref p, ref l, ref u, ref nsg, ref pip, ref pbp, ref sf);
+            bool? a = null, p = null, l = null, u = null, nsg = null, pip = null, pbp = null;
+            ReadSyncTogglesInto(ref a, ref p, ref l, ref u, ref nsg, ref pip, ref pbp);
 
-            return new SettingsSnapshot(lang, a, p, l, u, nsg, pip, pbp, sf);
+            return new SettingsSnapshot(lang, a, p, l, u, nsg, pip, pbp);
         });
 
         ApplySettingsSnapshot(snapshot);
@@ -80,12 +79,10 @@ public partial class SettingsPage : Page
         SyncLuasCard.Visibility = Visibility.Collapsed;
 
         ExtraSection.Visibility = Visibility.Visible;
-        AchievementsSection.Visibility = Visibility.Visible;
         ExperimentalSection.Visibility = Visibility.Visible;
 
         ApplySyncToggles(snap.SyncAchievements, snap.SyncPlaytime, snap.SyncLuas, snap.AutoUpdateDll,
-                         snap.ShowNonSteamGame, snap.ParentalIgnorePlaytime, snap.ParentalBypassPlaytime,
-                         snap.SchemaFetch);
+                         snap.ShowNonSteamGame, snap.ParentalIgnorePlaytime, snap.ParentalBypassPlaytime);
     }
 
     private void ApplyLanguageSelector(string saved)
@@ -114,8 +111,7 @@ public partial class SettingsPage : Page
     }
 
     private void ApplySyncToggles(bool? achievements, bool? playtime, bool? luas, bool? autoUpdateDll,
-                                   bool? showNonSteamGame, bool? parentalIgnorePlaytime, bool? parentalBypassPlaytime,
-                                   bool? schemaFetch)
+                                   bool? showNonSteamGame, bool? parentalIgnorePlaytime, bool? parentalBypassPlaytime)
     {
         _syncLoading = true;
         try
@@ -127,7 +123,6 @@ public partial class SettingsPage : Page
             if (showNonSteamGame == true) ShowNonSteamGameToggle.IsChecked = true;
             if (parentalIgnorePlaytime == true) ParentalIgnorePlaytimeToggle.IsChecked = true;
             if (parentalBypassPlaytime == true) ParentalBypassPlaytimeToggle.IsChecked = true;
-            if (schemaFetch == true) GetAchievementDataToggle.IsChecked = true;
         }
         finally
         {
@@ -137,8 +132,7 @@ public partial class SettingsPage : Page
 
     /// <summary>Reads sync toggles from config.json (called inside Task.Run).</summary>
     private static void ReadSyncTogglesInto(ref bool? achievements, ref bool? playtime, ref bool? luas, ref bool? autoUpdateDll,
-                                              ref bool? showNonSteamGame, ref bool? parentalIgnorePlaytime, ref bool? parentalBypassPlaytime,
-                                              ref bool? schemaFetch)
+                                              ref bool? showNonSteamGame, ref bool? parentalIgnorePlaytime, ref bool? parentalBypassPlaytime)
     {
         try
         {
@@ -167,13 +161,6 @@ public partial class SettingsPage : Page
                 parentalIgnorePlaytime = true;
             if (root.TryGetProperty("parental_bypass_playtime", out var pbp) && pbp.ValueKind == JsonValueKind.True)
                 parentalBypassPlaytime = true;
-            // Schema fetch: default ON when key absent (matches DLL default).
-            if (root.TryGetProperty("schema_fetch", out var sf2) && sf2.ValueKind == JsonValueKind.False)
-                schemaFetch = false;
-            else if (root.TryGetProperty("experimental_schema_fetch", out var sf) && sf.ValueKind == JsonValueKind.False)
-                schemaFetch = false;
-            else
-                schemaFetch = true;
         }
         catch { }
     }
@@ -341,6 +328,8 @@ public partial class SettingsPage : Page
     {
         var path = GetConfigPath();
 
+        // schema_fetch / experimental_schema_fetch are retired: stay in the strip list so a
+        // saved config drops the stale keys, but no longer written back.
         Services.ConfigHelper.SaveConfig(path,
             new[] { "sync_achievements", "sync_playtime", "sync_luas", "auto_update_dll",
                     "show_non_steam_game", "parental_ignore_playtime", "parental_bypass_playtime",
@@ -354,7 +343,6 @@ public partial class SettingsPage : Page
                 writer.WriteBoolean("show_non_steam_game", ShowNonSteamGameToggle.IsChecked == true);
                 writer.WriteBoolean("parental_ignore_playtime", ParentalIgnorePlaytimeToggle.IsChecked == true);
                 writer.WriteBoolean("parental_bypass_playtime", ParentalBypassPlaytimeToggle.IsChecked == true);
-                writer.WriteBoolean("schema_fetch", GetAchievementDataToggle.IsChecked == true);
             });
     }
 

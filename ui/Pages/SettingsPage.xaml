@@ -68,23 +68,6 @@
                                          Unchecked="SyncToggle_Changed" />
                     </ui:CardControl>
 
-                    <!-- "Make Achievements Work": exposed in both modes. -->
-                    <ui:CardControl x:Name="AchievementsSection" Margin="0,0,0,8">
-                        <ui:CardControl.Header>
-                            <StackPanel>
-                                <TextBlock Text="{res:Loc Settings_GetAchievementData}"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-                                <TextBlock Text="{res:Loc Settings_GetAchievementDataHint}"
-                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                        </ui:CardControl.Header>
-                        <ui:ToggleSwitch x:Name="GetAchievementDataToggle"
-                                         Checked="SyncToggle_Changed"
-                                         Unchecked="SyncToggle_Changed" />
-                    </ui:CardControl>
-
                     <!-- cloud_redirect-only QoL card. -->
                     <ui:CardControl x:Name="ShowNonSteamGameCard" Margin="0,0,0,0">
                         <ui:CardControl.Header>

@@ -1703,12 +1703,6 @@ Are you sure?</value>
   <data name="Settings_ExperimentalHint" xml:space="preserve">
     <value>PLACEHOLDER LOREM IPSUM</value>
   </data>
-  <data name="Settings_GetAchievementData" xml:space="preserve">
-    <value>Make Achievements Work</value>
-  </data>
-  <data name="Settings_GetAchievementDataHint" xml:space="preserve">
-    <value>Grab achievement data from Steam, makes achievements appear for games that ST itself does not get achievement data for.</value>
-  </data>
 
   <!-- ═══════════════════════════════════════════════════════════════════ -->
   <!-- Cloud Redirect Toggle                                               -->
@@ -1821,12 +1815,6 @@ Are you sure?</value>
   </data>
   <data name="News_AchievementSync_Description" xml:space="preserve">
     <value>Achievements and Playtime can now be synced to the cloud! Cross-device play is supported. Works through the normal Steam systems. Enable in Settings if you are interested. Note that this feature is experimental!</value>
-  </data>
-  <data name="News_SchemaFetching_Title" xml:space="preserve">
-    <value>Achievement Schema Fetching for SteamTools</value>
-  </data>
-  <data name="News_SchemaFetching_Description" xml:space="preserve">
-    <value>CR can now fetch achievement schemas, so games that previously did not display achievements will now display them!</value>
   </data>
   <data name="News_ShowLuaGame_Title" xml:space="preserve">
     <value>Show Lua Game in Status</value>

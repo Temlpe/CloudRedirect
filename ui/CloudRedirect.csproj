@@ -72,12 +72,6 @@
              Condition="!Exists('$(WorkshopToolSource)')" />
   </Target>
 
-  <ItemGroup>
-    <EmbeddedResource Include="Resources\payloads\**\*">
-      <LogicalName>$([System.String]::Copy('payloads/%(RecursiveDir)%(Filename)%(Extension)').Replace('\\','/'))</LogicalName>
-    </EmbeddedResource>
-  </ItemGroup>
-
   <!-- 32-bit Steam Cloud manager tool + its steam_api.dll, EMBEDDED into the
        single-file exe so we ship one file only. They are extracted side by side
        to a temp dir on demand (see EmbeddedCloud760) and the 64-bit UI spawns the

@@ -50,19 +50,6 @@
                 </ui:CardControl.Header>
             </ui:CardControl>
 
-            <!-- Achievement schema fetching -->
-            <ui:CardControl Margin="0,0,0,12">
-                <ui:CardControl.Header>
-                    <StackPanel>
-                        <TextBlock Text="{res:Loc News_SchemaFetching_Title}" FontWeight="SemiBold"
-                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-                        <TextBlock Text="{res:Loc News_SchemaFetching_Description}"
-                                   TextWrapping="Wrap"
-                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    </StackPanel>
-                </ui:CardControl.Header>
-            </ui:CardControl>
-
             <!-- Show Lua game in status -->
             <ui:CardControl Margin="0,0,0,12">
                 <ui:CardControl.Header>

@@ -1468,12 +1468,6 @@ Esto puede causar pérdida de datos en algunos casos.
   <data name="Settings_ExtraHint" xml:space="preserve">
     <value>Extras opcionales que no forman parte de la sincronización en la nube.</value>
   </data>
-  <data name="Settings_GetAchievementData" xml:space="preserve">
-    <value>Hacer que los logros funcionen</value>
-  </data>
-  <data name="Settings_GetAchievementDataHint" xml:space="preserve">
-    <value>Obtiene datos de logros de Steam; hace que aparezcan logros en juegos para los que ST no consigue datos por sí mismo.</value>
-  </data>
   <data name="Settings_Parental" xml:space="preserve">
     <value>Steam Familia</value>
   </data>
@@ -1730,12 +1724,6 @@ Esto puede causar pérdida de datos en algunos casos.
   </data>
   <data name="News_AchievementSync_Description" xml:space="preserve">
     <value>¡Los logros y el tiempo de juego ahora se pueden sincronizar en la nube! Se soporta juego entre dispositivos. Funciona a través de los sistemas normales de Steam. Actívalo en Ajustes si te interesa. ¡Esta función es experimental!</value>
-  </data>
-  <data name="News_SchemaFetching_Title" xml:space="preserve">
-    <value>Obtención de esquemas de logros para SteamTools</value>
-  </data>
-  <data name="News_SchemaFetching_Description" xml:space="preserve">
-    <value>¡CR ahora puede obtener esquemas de logros, así que juegos que antes no mostraban logros ahora los mostrarán!</value>
   </data>
   <data name="News_ShowLuaGame_Title" xml:space="preserve">
     <value>Mostrar juego Lua en el estado</value>

@@ -12,7 +12,6 @@ flatpak/cloud_redirect.so
 flatpak/cloud_redirect_cli
 build.ps1
 ui/Resources/cloud_redirect_cli.exe
-ui/Resources/payloads/
 tests/
 ui/CloudRedirect.Tests/
 src/testutil/
@@ -20,3 +19,4 @@ docs/
 tools/
 flatpak/release.sh
 ui/native/
+release-*/
