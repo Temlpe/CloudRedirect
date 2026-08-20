@@ -181,6 +181,7 @@ enum EItemState {
     k_EItemStateNone = 0,
     k_EItemStateSubscribed = 1,
     k_EItemStateInstalled = 4,
+    k_EItemStateNeedsUpdate = 8,
     k_EItemStateDownloading = 16,
     k_EItemStateDownloadPending = 32,
 };
@@ -833,8 +834,9 @@ static int CmdPull(SteamApi& api, AppId_t workshopAppid, uint32_t gameAppid,
 
     std::string title = ItemTitleFor(steamid64, gameAppid);
     PublishedFileId_t itemId = 0;
+    SteamUGCDetails_t details{};
     int found = FindItemByTitle(api, (AccountID_t)(steamid64 & 0xFFFFFFFFu),
-                                workshopAppid, title, itemId, nullptr);
+                                workshopAppid, title, itemId, &details);
     if (found == kFindError) {
         fprintf(stderr, "Error: could not enumerate published items\n");
         return EXIT_ERROR;
@@ -844,22 +846,49 @@ static int CmdPull(SteamApi& api, AppId_t workshopAppid, uint32_t gameAppid,
         return EXIT_OK;
     }
 
-    // Subscribe (idempotent) and download until installed.
+    // Subscribe (idempotent) and download until installed AND up to date.
+    // k_EItemStateNeedsUpdate matters: another machine may have pushed a new
+    // item revision that Steam has not applied yet; merging the stale
+    // installed content then would lose the other machine's saves.
     ULONGLONG deadline = GetTickCount64() + (ULONGLONG)timeoutSec * 1000;
     uint32_t state = api.GetItemState(api.ugc, itemId);
     if (!(state & k_EItemStateSubscribed)) {
         api.SubscribeItem(api.ugc, itemId);
         state = api.GetItemState(api.ugc, itemId);
     }
-    if (!(state & k_EItemStateInstalled)) {
+    if (!(state & k_EItemStateInstalled) || (state & k_EItemStateNeedsUpdate)) {
         api.DownloadItem(api.ugc, itemId, true);
         for (;;) {
             api.RunCallbacks();
             Sleep(100);
             state = api.GetItemState(api.ugc, itemId);
-            if (state & k_EItemStateInstalled) break;
+            if ((state & k_EItemStateInstalled) && !(state & k_EItemStateNeedsUpdate))
+                break;
             if (GetTickCount64() >= deadline) {
                 fprintf(stderr, "Error: timed out waiting for item %llu download\n",
+                        (unsigned long long)itemId);
+                return EXIT_ERROR;
+            }
+        }
+    }
+
+    // Even with a clean state, the client can briefly serve stale content
+    // while a just-pushed item update propagates (no NeedsUpdate flag yet).
+    // Compare the on-disk install timestamp with the item's server-side
+    // update time and keep waiting until the local copy is current -- merging
+    // a stale tree would silently drop another machine's newest saves.
+    if (details.m_rtimeUpdated > 0) {
+        for (;;) {
+            uint64_t sizeOnDisk = 0;
+            uint32_t ts = 0;
+            char tmpFolder[MAX_PATH] = {};
+            api.GetItemInstallInfo(api.ugc, itemId, &sizeOnDisk,
+                                   tmpFolder, sizeof(tmpFolder), &ts);
+            if (ts > 0 && (uint64_t)ts >= details.m_rtimeUpdated) break;
+            api.DownloadItem(api.ugc, itemId, true);
+            Sleep(500);
+            if (GetTickCount64() >= deadline) {
+                fprintf(stderr, "Error: timed out waiting for item %llu content to refresh\n",
                         (unsigned long long)itemId);
                 return EXIT_ERROR;
             }

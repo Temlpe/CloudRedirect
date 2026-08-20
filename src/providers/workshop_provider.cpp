@@ -42,6 +42,11 @@ constexpr int kPullRetryBackoffSec = 30;
 constexpr int kMaxPullAttempts = 10;
 constexpr int kPullInlineRetryDelaySec = 5;
 
+// Mirror freshness window: a mirror older than this is re-pulled on the next
+// access (and always before a push), so saves uploaded from another machine
+// reach this one within the window instead of only at the next Steam restart.
+constexpr int kPullFreshnessSecDefault = 600;
+
 #ifdef _WIN32
 // Roaming AppData without SHGetKnownFolderPath's pointer dance.
 std::string GetAppDataDir() {
@@ -108,6 +113,9 @@ bool WorkshopProvider::Init(const std::string& configPath) {
         if (cfg["workshop_pull_timeout_sec"].type == Json::Type::Number &&
             cfg["workshop_pull_timeout_sec"].integer() >= 10)
             m_pullTimeoutSec = (int)cfg["workshop_pull_timeout_sec"].integer();
+        if (cfg["workshop_pull_fresh_sec"].type == Json::Type::Number &&
+            cfg["workshop_pull_fresh_sec"].integer() >= 60)
+            m_pullFreshnessSec = (int)cfg["workshop_pull_fresh_sec"].integer();
         if (cfg["workshop_tool_path"].type == Json::Type::String && !cfg["workshop_tool_path"].str().empty())
             m_toolPath = cfg["workshop_tool_path"].str();
     }
@@ -477,6 +485,42 @@ int WorkshopProvider::PushItem(uint32_t accountId, uint32_t appId,
         st->pushInFlight = true;
     }
 
+    // Multi-device safety: merge the item's current content before replacing
+    // it. A push from a stale mirror would clobber saves uploaded from
+    // another machine after our last pull. If the fresh pull fails, skip this
+    // push (dirty stays set, PushLoop backs off and retries).
+    {
+        bool needPull = false;
+        std::unique_lock<std::mutex> lk(st->mtx);
+        while (st->pullInFlight && !m_shutdown.load())
+            st->cv.wait_for(lk, std::chrono::milliseconds(100));
+        auto now = std::chrono::steady_clock::now();
+        needPull = !(st->pullDone && now < st->pullFreshUntil);
+        if (needPull)
+            st->pullInFlight = true;
+        lk.unlock();
+
+        if (needPull) {
+            int prc = PullItem(accountId, appId, st);
+            lk.lock();
+            st->pullInFlight = false;
+            if (prc == 0) {
+                st->pullDone = true;
+                st->pullFreshUntil = std::chrono::steady_clock::now() +
+                    std::chrono::seconds(m_pullFreshnessSec);
+            }
+            st->cv.notify_all();
+            lk.unlock();
+            if (prc != 0) {
+                LOG("[WorkshopProvider] Push %u/%u skipped: pre-push pull failed (rc=%d); will retry",
+                    accountId, appId, prc);
+                std::lock_guard<std::mutex> lock(st->mtx);
+                st->pushInFlight = false;
+                return prc;
+            }
+        }
+    }
+
     std::string content = ItemRootDir(accountId, appId);
     std::string out;
     int rc = RunTool(
@@ -559,13 +603,13 @@ void WorkshopProvider::EnsurePulled(uint32_t accountId, uint32_t appId) {
     auto st = GetItemState(accountId, appId);
 
     std::unique_lock<std::mutex> lk(st->mtx);
-    if (st->pullDone) return;
+    auto now = std::chrono::steady_clock::now();
+    if (st->pullDone && now < st->pullFreshUntil) return; // mirror still fresh
     if (st->pullInFlight) {
         st->cv.wait_for(lk, std::chrono::seconds(m_pullTimeoutSec + kPullWaitMarginSec),
                         [&] { return st->pullDone || m_shutdown.load(); });
         return;
     }
-    auto now = std::chrono::steady_clock::now();
     if (st->pullAttempts > 0 &&
         now - st->lastPullAttempt < std::chrono::seconds(kPullRetryBackoffSec)) {
         // Recently failed: back off and serve the mirror as-is this call.
@@ -585,21 +629,10 @@ void WorkshopProvider::EnsurePulled(uint32_t accountId, uint32_t appId) {
 
     LoadMeta(st, accountId, appId);
 
-    // Crash/offline recovery: unsynced local changes must reach the item
-    // before we merge remote content, or the merge could fight the next push.
-    if (st->dirty) {
-        int rc = PushItem(accountId, appId, st);
-        if (rc == 0) {
-            lk.lock();
-            st->pullDone = true;
-            st->pullInFlight = false;
-            st->cv.notify_all();
-            return;
-        }
-        // Push failed (offline, rate limit, ...): pull anyway; the merge keeps
-        // newer local files and the dirty flag stays for a later push.
-    }
-
+    // Merge remote content FIRST. The merge keeps newer local files and
+    // respects local tombstones, so unsynced local changes survive; the dirty
+    // push (PushLoop) then uploads the merged tree. Pushing stale local
+    // content before the merge would overwrite another machine's newer saves.
     int rc = PullItem(accountId, appId, st);
     if (rc != 0 && st->pullAttempts == 1) {
         // First pull attempt of the session: Steam may still be starting when
@@ -615,6 +648,8 @@ void WorkshopProvider::EnsurePulled(uint32_t accountId, uint32_t appId) {
     st->lastPullAttempt = std::chrono::steady_clock::now();
     if (rc == 0) {
         st->pullDone = true;
+        st->pullFreshUntil = std::chrono::steady_clock::now() +
+            std::chrono::seconds(m_pullFreshnessSec);
     } else {
         LOG("[WorkshopProvider] Pull %u/%u failed (rc=%d); will retry (attempt %d/%d)",
             accountId, appId, rc, st->pullAttempts, kMaxPullAttempts);

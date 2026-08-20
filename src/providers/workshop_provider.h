@@ -68,6 +68,7 @@ private:
         std::chrono::steady_clock::time_point dirtySince{};
         std::chrono::steady_clock::time_point pushRetryAfter{};
         std::chrono::steady_clock::time_point lastPullAttempt{};
+        std::chrono::steady_clock::time_point pullFreshUntil{}; // mirror is fresh until then
         uint64_t itemId = 0;
         // relPath (relative to the item root) -> unix ts of the local deletion.
         // Pull merge cannot resurrect these; cleared after a successful push.
@@ -81,6 +82,7 @@ private:
     int32_t m_visibility = 3;           // unlisted
     int m_pushDelaySec = 90;
     int m_pullTimeoutSec = 120;
+    int m_pullFreshnessSec = 600;       // mirror considered fresh for this long
     bool m_initialized = false;
 
     // ── State ──────────────────────────────────────────────────────────
