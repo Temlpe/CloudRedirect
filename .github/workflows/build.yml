@@ -15,37 +15,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-
       - name: Configure CMake
         run: cmake -S . -B build-win -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
         shell: cmd
 
       - name: Build C++ targets
         run: cmake --build build-win --config Release --target cloud_redirect workshop_sync_tool cloud760_tool cloud_redirect_cli
-        shell: cmd
-
-      - name: Stage artifacts
-        run: |
-          mkdir build\Release 2>nul
-          copy /y build-win\Release\cloud_redirect.dll build\Release\
-          copy /y build-win\Release\cloud_redirect_cli.exe build\Release\
-          copy /y build-win\Release\workshop_sync_tool.exe build\Release\
-        shell: cmd
-
-      - name: Prepare UI native resources
-        run: |
-          mkdir ui\native 2>nul
-          copy /y build-win\Release\cloud760_tool.exe ui\native\cloud760_tool.exe
-          copy /y native\steam_api64.dll ui\native\steam_api64.dll
-          if not exist ui\native\steam_api.dll echo. > ui\native\steam_api.dll
-        shell: cmd
-
-      - name: Publish WPF UI
-        run: dotnet publish ui\CloudRedirect.csproj -c Release -r win-x64 --self-contained false -o ui\bin\publish
         shell: cmd
 
       - name: Upload cloud_redirect.dll
@@ -60,8 +35,8 @@ jobs:
           name: workshop_sync_tool.exe
           path: build-win/Release/workshop_sync_tool.exe
 
-      - name: Upload CloudRedirect.exe
+      - name: Upload cloud_redirect_cli.exe
         uses: actions/upload-artifact@v4
         with:
-          name: CloudRedirect.exe
-          path: ui/bin/publish/CloudRedirect.exe
+          name: cloud_redirect_cli.exe
+          path: build-win/Release/cloud_redirect_cli.exe
