@@ -40,6 +40,7 @@ jobs:
         run: |
           mkdir ui\native 2>nul
           copy /y build-win\Release\cloud760_tool.exe ui\native\cloud760_tool.exe
+          copy /y native\steam_api64.dll ui\native\steam_api64.dll
           if not exist ui\native\steam_api.dll echo. > ui\native\steam_api.dll
         shell: cmd
 
