@@ -586,6 +586,13 @@ int WorkshopProvider::RunTool(const std::vector<std::string>&, std::string&, int
 
 int WorkshopProvider::PushItem(uint32_t accountId, uint32_t appId,
                                const std::shared_ptr<ItemState>& st) {
+    uint32_t currentAcct = m_currentAccountId.load();
+    if (currentAcct != 0 && accountId != currentAcct) {
+        LOG("[WorkshopProvider] Push %u/%u: skipping (account %u != current %u)",
+            accountId, appId, accountId, currentAcct);
+        return kToolAccountMismatch;
+    }
+
     {
         std::lock_guard<std::mutex> lock(st->mtx);
         if (st->pushInFlight) return -1;
@@ -656,8 +663,14 @@ int WorkshopProvider::PushItem(uint32_t accountId, uint32_t appId,
         LOG("[WorkshopProvider] Pushed %u/%u to item %llu",
             accountId, appId, (unsigned long long)st->itemId);
     } else if (rc == kToolAccountMismatch) {
-        // Logged-in account changed; do not sync this item under the wrong
-        // account. Keep dirty so it is retried after the account switch back.
+        size_t pos = out.find("actual=");
+        if (pos != std::string::npos) {
+            try {
+                uint32_t actual = (uint32_t)std::stoul(out.substr(pos + 7));
+                m_currentAccountId.store(actual);
+                LOG("[WorkshopProvider] Detected current Steam account: %u", actual);
+            } catch (...) {}
+        }
         LOG("[WorkshopProvider] Push %u/%u skipped: account mismatch", accountId, appId);
     } else {
         LOG("[WorkshopProvider] Push %u/%u failed (rc=%d): %s",
@@ -699,6 +712,16 @@ int WorkshopProvider::PullItem(uint32_t accountId, uint32_t appId,
             accountId, appId, (unsigned long long)st->itemId,
             pos == std::string::npos ? " (no item published yet)" : "");
     } else {
+        if (rc == kToolAccountMismatch) {
+            size_t pos = out.find("actual=");
+            if (pos != std::string::npos) {
+                try {
+                    uint32_t actual = (uint32_t)std::stoul(out.substr(pos + 7));
+                    m_currentAccountId.store(actual);
+                    LOG("[WorkshopProvider] Detected current Steam account: %u", actual);
+                } catch (...) {}
+            }
+        }
         LOG("[WorkshopProvider] Pull %u/%u failed (rc=%d): %s",
             accountId, appId, rc, out.c_str());
     }
@@ -707,6 +730,14 @@ int WorkshopProvider::PullItem(uint32_t accountId, uint32_t appId,
 
 void WorkshopProvider::EnsurePulled(uint32_t accountId, uint32_t appId) {
     if (m_shutdown.load()) return;
+
+    uint32_t currentAcct = m_currentAccountId.load();
+    if (currentAcct != 0 && accountId != currentAcct) {
+        LOG("[WorkshopProvider] Pull %u/%u: skipping (account %u != current %u)",
+            accountId, appId, accountId, currentAcct);
+        return;
+    }
+
     auto st = GetItemState(accountId, appId);
 
     std::unique_lock<std::mutex> lk(st->mtx);

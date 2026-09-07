@@ -97,6 +97,7 @@ private:
     std::mutex m_pushMtx;
     std::condition_variable m_pushCv;
     std::atomic<bool> m_shutdown{false};
+    std::atomic<uint32_t> m_currentAccountId{0}; // detected from first tool run
     NotifyFn m_notifyFn;
 
     // ── Mirror filesystem helpers (same containment rules as LocalDisk) ─
