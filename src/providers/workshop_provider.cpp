@@ -30,6 +30,7 @@ constexpr int kToolAccountMismatch = 5;
 constexpr int kRetryAfterAgreementSec = 600;
 constexpr int kRetryAfterRateLimitSec = 900;
 constexpr int kRetryAfterOtherSec = 300;
+constexpr int kRetryAfterAccountMismatchSec = 3600;
 
 // Tool gets its own generous internal timeout; the spawn wait adds margin.
 constexpr int kPushTimeoutSec = 1800;
@@ -735,11 +736,19 @@ void WorkshopProvider::EnsurePulled(uint32_t accountId, uint32_t appId) {
 
     LoadMeta(st, accountId, appId);
 
-    // Merge remote content FIRST. The merge keeps newer local files and
-    // respects local tombstones, so unsynced local changes survive; the dirty
-    // push (PushLoop) then uploads the merged tree. Pushing stale local
-    // content before the merge would overwrite another machine's newer saves.
     int rc = PullItem(accountId, appId, st);
+    if (rc == kToolAccountMismatch) {
+        LOG("[WorkshopProvider] Pull %u/%u: account mismatch -- "
+            "this item belongs to a different Steam account; "
+            "skipping all further pull attempts this session",
+            accountId, appId);
+        lk.lock();
+        st->pullInFlight = false;
+        st->pullAttempts = kMaxPullAttempts;
+        st->lastPullAttempt = std::chrono::steady_clock::now();
+        st->cv.notify_all();
+        return;
+    }
     if (rc != 0 && st->pullAttempts == 1) {
         // First pull attempt of the session: Steam may still be starting when
         // a game launches early. One inline retry covers that common case.
@@ -809,6 +818,10 @@ void WorkshopProvider::PushLoop() {
             std::lock_guard<std::mutex> lock(candidate->mtx);
             candidate->pushRetryAfter = std::chrono::steady_clock::now() +
                 std::chrono::seconds(kRetryAfterAgreementSec);
+        } else if (rc == kToolAccountMismatch) {
+            std::lock_guard<std::mutex> lock(candidate->mtx);
+            candidate->pushRetryAfter = std::chrono::steady_clock::now() +
+                std::chrono::seconds(kRetryAfterAccountMismatchSec);
         } else if (rc == kToolRateLimit) {
             std::lock_guard<std::mutex> lock(candidate->mtx);
             candidate->pushRetryAfter = std::chrono::steady_clock::now() +
