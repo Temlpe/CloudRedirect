@@ -158,6 +158,23 @@ if(WIN32)
     target_link_libraries(cloud_redirect PRIVATE
         Shlwapi Advapi32 ws2_32 winhttp Crypt32 Shell32 Ole32 Psapi
     )
+
+    # Embed workshop_sync_tool.exe and steam_api64.dll as RCDATA resources
+    # inside cloud_redirect.dll so the DLL can extract them to
+    # %APPDATA%\CloudRedirect\tools at runtime without requiring the GUI.
+    set(EMBEDDED_RC ${CMAKE_CURRENT_BINARY_DIR}/embedded_resources.rc)
+    add_custom_command(
+        OUTPUT ${EMBEDDED_RC}
+        COMMAND ${CMAKE_COMMAND}
+            -DTOOL_EXE=$<TARGET_FILE:workshop_sync_tool>
+            -DDLL_FILE=${CMAKE_SOURCE_DIR}/native/steam_api64.dll
+            -DOUTPUT=${EMBEDDED_RC}
+            -P ${CMAKE_SOURCE_DIR}/cmake/generate_embedded_rc.cmake
+        DEPENDS workshop_sync_tool
+        VERBATIM
+    )
+    target_sources(cloud_redirect PRIVATE ${EMBEDDED_RC})
+    add_dependencies(cloud_redirect workshop_sync_tool)
     
     # CLI wrapper executable
     add_executable(cloud_redirect_cli

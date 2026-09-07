@@ -116,6 +116,7 @@ private:
     void ClearDirtyFlag(uint32_t accountId, uint32_t appId);
 
     // ── Worker tool interaction ────────────────────────────────────────
+    bool EnsureToolExtracted();
     int RunTool(const std::vector<std::string>& args, std::string& stdoutOut,
                 int timeoutSec);
     int PushItem(uint32_t accountId, uint32_t appId,

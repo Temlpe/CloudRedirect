@@ -3,6 +3,7 @@
 #include "file_util.h"
 #include "json.h"
 #include "log.h"
+#include "sha256_hmac.h"
 
 #include <chrono>
 #include <filesystem>
@@ -137,6 +138,8 @@ bool WorkshopProvider::Init(const std::string& configPath) {
         }
         m_toolPath = appData + "\\CloudRedirect\\tools\\workshop_sync_tool.exe";
     }
+
+    EnsureToolExtracted();
 
     if (m_root.empty()) m_root = workspaceDir;
     if (!m_root.empty() && m_root.back() != '\\' && m_root.back() != '/')
@@ -349,6 +352,103 @@ void WorkshopProvider::Notify(const std::string& message) {
 // ── Worker tool interaction ────────────────────────────────────────────
 
 #ifdef _WIN32
+
+bool WorkshopProvider::EnsureToolExtracted() {
+    HMODULE hThisDll = nullptr;
+    GetModuleHandleExW(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(&WorkshopProvider::EnsureToolExtracted),
+        &hThisDll);
+    if (!hThisDll) {
+        LOG("[WorkshopProvider] Could not resolve own module handle for resource lookup");
+        return false;
+    }
+
+    HRSRC hToolRes = FindResourceW(hThisDll, L"WORKSHOP_TOOL_EXE", RT_RCDATA);
+    HRSRC hDllRes = FindResourceW(hThisDll, L"STEAM_API64_DLL", RT_RCDATA);
+    if (!hToolRes || !hDllRes) {
+        LOG("[WorkshopProvider] Embedded workshop tool resources not found; "
+            "falling back to existing files on disk");
+        return false;
+    }
+
+    HGLOBAL hToolMem = LoadResource(hThisDll, hToolRes);
+    HGLOBAL hDllMem = LoadResource(hThisDll, hDllRes);
+    if (!hToolMem || !hDllMem) {
+        LOG("[WorkshopProvider] Failed to load embedded workshop tool resources");
+        return false;
+    }
+
+    DWORD toolSize = SizeofResource(hThisDll, hToolRes);
+    DWORD dllSize = SizeofResource(hThisDll, hDllRes);
+    const void* toolData = LockResource(hToolMem);
+    const void* dllData = LockResource(hDllMem);
+    if (!toolData || !dllData || toolSize == 0 || dllSize == 0) {
+        LOG("[WorkshopProvider] Failed to lock embedded workshop tool resources");
+        return false;
+    }
+
+    std::string appData = GetAppDataDir();
+    if (appData.empty()) {
+        LOG("[WorkshopProvider] Could not resolve %%APPDATA%% for tool extraction");
+        return false;
+    }
+
+    std::string toolsDir = appData + "\\CloudRedirect\\tools";
+    std::error_code ec;
+    std::filesystem::create_directories(FileUtil::LongPath(FileUtil::Utf8ToPath(toolsDir)), ec);
+
+    std::string exePath = toolsDir + "\\workshop_sync_tool.exe";
+    std::string dllPath = toolsDir + "\\steam_api64.dll";
+    std::string hashFile = toolsDir + "\\workshop_sync_tool.sha256";
+
+    auto toolHashBytes = crypto::Sha256(static_cast<const uint8_t*>(toolData), toolSize);
+    std::string toolHash = crypto::ToHex(toolHashBytes.data(), toolHashBytes.size());
+    for (auto& c : toolHash) c = (char)toupper((unsigned char)c);
+
+    std::string existingHash;
+    {
+        std::ifstream hf(FileUtil::Utf8ToPath(hashFile));
+        if (hf) {
+            std::string content((std::istreambuf_iterator<char>(hf)), {});
+            for (auto& c : content) {
+                if (c != '\r' && c != '\n' && c != ' ') existingHash += c;
+            }
+        }
+    }
+
+    bool needWrite = false;
+    {
+        std::error_code fec;
+        if (!std::filesystem::exists(FileUtil::Utf8ToPath(exePath), fec)) needWrite = true;
+        if (!std::filesystem::exists(FileUtil::Utf8ToPath(dllPath), fec)) needWrite = true;
+    }
+    if (existingHash != toolHash) needWrite = true;
+
+    if (!needWrite) {
+        LOG("[WorkshopProvider] Workshop tool already up-to-date at %s", exePath.c_str());
+        return true;
+    }
+
+    LOG("[WorkshopProvider] Extracting embedded workshop tool to %s", exePath.c_str());
+    if (!FileUtil::AtomicWriteBinary(exePath, toolData, toolSize)) {
+        LOG("[WorkshopProvider] Failed to write workshop_sync_tool.exe");
+        return false;
+    }
+    if (!FileUtil::AtomicWriteBinary(dllPath, dllData, dllSize)) {
+        LOG("[WorkshopProvider] Failed to write steam_api64.dll");
+        return false;
+    }
+    if (!FileUtil::AtomicWriteText(hashFile, toolHash)) {
+        LOG("[WorkshopProvider] Failed to write workshop_sync_tool.sha256");
+        return false;
+    }
+
+    m_toolPath = exePath;
+    LOG("[WorkshopProvider] Workshop tool extracted successfully (hash=%s)", toolHash.c_str());
+    return true;
+}
+
 // Correct CommandLineToArgvW-compatible quoting: double runs of backslashes
 // before quotes and the trailing backslash run (a lone trailing backslash
 // would otherwise escape the closing quote and corrupt every following arg).
@@ -472,6 +572,7 @@ int WorkshopProvider::RunTool(const std::vector<std::string>& args,
     return rc;
 }
 #else
+bool WorkshopProvider::EnsureToolExtracted() { return false; }
 int WorkshopProvider::RunTool(const std::vector<std::string>&, std::string&, int) {
     return -1;
 }
