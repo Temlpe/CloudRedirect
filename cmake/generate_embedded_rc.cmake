@@ -20,9 +20,11 @@ if(NOT EXISTS "${DLL_FILE}")
     message(FATAL_ERROR "steam_api64.dll not found at: ${DLL_FILE}")
 endif()
 
-# RC compiler accepts both / and \; use \ for maximum compatibility.
-string(REPLACE "/" "\\" TOOL_EXE_RC "${TOOL_EXE}")
-string(REPLACE "/" "\\" DLL_FILE_RC "${DLL_FILE}")
+# RC compiler interprets backslash as escape (e.g. \n = newline), so use
+# forward slashes in the .rc file. The RC compiler accepts forward slashes
+# in file paths on Windows.
+string(REPLACE "\\" "/" TOOL_EXE_RC "${TOOL_EXE}")
+string(REPLACE "\\" "/" DLL_FILE_RC "${DLL_FILE}")
 
 set(RC_CONTENT
 "#include <windows.h>\n"
