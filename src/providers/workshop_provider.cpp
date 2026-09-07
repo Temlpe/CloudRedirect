@@ -353,19 +353,24 @@ void WorkshopProvider::Notify(const std::string& message) {
 
 #ifdef _WIN32
 
-bool WorkshopProvider::EnsureToolExtracted() {
-    HMODULE hThisDll = nullptr;
+static void* GetThisDllModuleBase() {
+    HMODULE hMod = nullptr;
     GetModuleHandleExW(
         GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-        reinterpret_cast<LPCWSTR>(&WorkshopProvider::EnsureToolExtracted),
-        &hThisDll);
+        reinterpret_cast<LPCWSTR>(&GetThisDllModuleBase),
+        &hMod);
+    return hMod;
+}
+
+bool WorkshopProvider::EnsureToolExtracted() {
+    HMODULE hThisDll = (HMODULE)GetThisDllModuleBase();
     if (!hThisDll) {
         LOG("[WorkshopProvider] Could not resolve own module handle for resource lookup");
         return false;
     }
 
-    HRSRC hToolRes = FindResourceW(hThisDll, L"WORKSHOP_TOOL_EXE", RT_RCDATA);
-    HRSRC hDllRes = FindResourceW(hThisDll, L"STEAM_API64_DLL", RT_RCDATA);
+    HRSRC hToolRes = FindResourceW(hThisDll, L"WORKSHOP_TOOL_EXE", MAKEINTRESOURCEW(10));
+    HRSRC hDllRes = FindResourceW(hThisDll, L"STEAM_API64_DLL", MAKEINTRESOURCEW(10));
     if (!hToolRes || !hDllRes) {
         LOG("[WorkshopProvider] Embedded workshop tool resources not found; "
             "falling back to existing files on disk");
